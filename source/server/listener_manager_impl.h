@@ -8,6 +8,8 @@
 #include "common/common/logger.h"
 #include "common/json/json_validator.h"
 
+#include "server/init_manager_impl.h"
+
 namespace Envoy {
 namespace Server {
 
@@ -34,8 +36,8 @@ public:
                           Configuration::FactoryContext& context) override {
     return createFilterFactoryList_(filters, server_, context);
   }
-  Network::ListenSocketPtr createListenSocket(Network::Address::InstanceConstSharedPtr address,
-                                              bool bind_to_port) override;
+  Network::ListenSocketSharedPtr
+  createListenSocket(Network::Address::InstanceConstSharedPtr address, bool bind_to_port) override;
 
 private:
   Instance& server_;
@@ -50,11 +52,20 @@ class ListenerImpl : public Listener,
                      Json::Validator,
                      Logger::Loggable<Logger::Id::config> {
 public:
-  ListenerImpl(Instance& server, ListenerComponentFactory& factory, const Json::Object& json);
+  /**
+   * fixfix
+   */
+  ListenerImpl(const Json::Object& json, Instance& server, ListenerComponentFactory& factory,
+               const std::string& name, bool workers_started, uint64_t hash);
+
+  Network::Address::InstanceConstSharedPtr address() { return address_; }
+  uint64_t hash() { return hash_; }
+  const std::string& name() { return name_; }
+  const Network::ListenSocketSharedPtr& getSocket() { return socket_; }
+  void setSocket(const Network::ListenSocketSharedPtr& socket);
 
   // Server::Listener
   Network::FilterChainFactory& filterChainFactory() override { return *this; }
-  Network::Address::InstanceConstSharedPtr address() override { return address_; }
   Network::ListenSocket& socket() override { return *socket_; }
   bool bindToPort() override { return bind_to_port_; }
   Ssl::ServerContext* sslContext() override { return ssl_context_.get(); }
@@ -70,7 +81,7 @@ public:
   DrainManager& drainManager() override { return server_.drainManager(); }
   bool healthCheckFailed() override { return server_.healthCheckFailed(); }
   Tracing::HttpTracer& httpTracer() override { return server_.httpTracer(); }
-  Init::Manager& initManager() override { return server_.initManager(); }
+  Init::Manager& initManager() override;
   const LocalInfo::LocalInfo& localInfo() override { return server_.localInfo(); }
   Envoy::Runtime::RandomGenerator& random() override { return server_.random(); }
   RateLimit::ClientPtr
@@ -88,7 +99,7 @@ public:
 private:
   Instance& server_;
   Network::Address::InstanceConstSharedPtr address_;
-  Network::ListenSocketPtr socket_;
+  Network::ListenSocketSharedPtr socket_;
   Stats::ScopePtr global_scope_;   // Stats with global named scope, but needed for LDS cleanup.
   Stats::ScopePtr listener_scope_; // Stats with listener named scope.
   Ssl::ServerContextPtr ssl_context_;
@@ -97,29 +108,45 @@ private:
   const bool use_original_dst_{};
   const uint32_t per_connection_buffer_limit_bytes_{};
   std::vector<Configuration::NetworkFilterFactoryCb> filter_factories_;
+  const std::string name_;
+  const bool workers_started_;
+  const uint64_t hash_;
+  InitManagerImpl dynamic_init_manager_;
 };
+
+typedef std::unique_ptr<ListenerImpl> ListenerImplPtr;
 
 /**
  * Implementation of ListenerManager.
  */
-class ListenerManagerImpl : public ListenerManager {
+class ListenerManagerImpl : public ListenerManager, Logger::Loggable<Logger::Id::config> {
 public:
   ListenerManagerImpl(Instance& server, ListenerComponentFactory& listener_factory,
                       WorkerFactory& worker_factory);
 
   // Server::ListenerManager
-  void addListener(const Json::Object& json) override;
-  std::list<std::reference_wrapper<Listener>> listeners() override;
+  bool addOrUpdateListener(const Json::Object& json) override;
+  std::vector<std::reference_wrapper<Listener>> listeners() override;
   uint64_t numConnections() override;
+  bool removeListener(const std::string& listener_name) override;
   void startWorkers(GuardDog& guard_dog) override;
   void stopListeners() override;
   void stopWorkers() override;
 
 private:
+  typedef std::list<ListenerImplPtr> ListenerList;
+
+  /**
+   * fixfix must be ordered, C++14
+   */
+  ListenerList::iterator getListenerByName(ListenerList& listeners, const std::string& name);
+
   Instance& server_;
   ListenerComponentFactory& factory_;
-  std::list<ListenerPtr> listeners_;
+  ListenerList active_listeners_;
+  ListenerList warming_listeners_;
   std::list<WorkerPtr> workers_;
+  bool workers_started_{};
 };
 
 } // Server

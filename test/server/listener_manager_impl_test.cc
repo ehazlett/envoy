@@ -10,8 +10,10 @@
 #include "gtest/gtest.h"
 
 using testing::_;
+using testing::InSequence;
 using testing::Invoke;
 using testing::NiceMock;
+using testing::Return;
 
 namespace Envoy {
 namespace Server {
@@ -19,6 +21,21 @@ namespace Server {
 class ListenerManagerImplTest : public testing::Test {
 public:
   ListenerManagerImplTest() {
+    EXPECT_CALL(worker_factory_, createWorker_()).WillOnce(Return(worker_));
+    manager_.reset(new ListenerManagerImpl(server_, listener_factory_, worker_factory_));
+  }
+
+  NiceMock<MockInstance> server_;
+  MockListenerComponentFactory listener_factory_;
+  MockWorker* worker_ = new MockWorker();
+  NiceMock<MockWorkerFactory> worker_factory_;
+  std::unique_ptr<ListenerManagerImpl> manager_;
+  NiceMock<MockGuardDog> guard_dog_;
+};
+
+class ListenerManagerImplWithRealFiltersTest : public ListenerManagerImplTest {
+public:
+  ListenerManagerImplWithRealFiltersTest() {
     // Use real filter loading by default.
     ON_CALL(listener_factory_, createFilterFactoryList(_, _))
         .WillByDefault(
@@ -29,14 +46,9 @@ public:
                              filters, server_, context);
                        }));
   }
-
-  NiceMock<MockInstance> server_;
-  MockListenerComponentFactory listener_factory_;
-  NiceMock<MockWorkerFactory> worker_factory_;
-  ListenerManagerImpl manager_{server_, listener_factory_, worker_factory_};
 };
 
-TEST_F(ListenerManagerImplTest, EmptyFilter) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, EmptyFilter) {
   std::string json = R"EOF(
   {
     "address": "tcp://127.0.0.1:1234",
@@ -46,12 +58,12 @@ TEST_F(ListenerManagerImplTest, EmptyFilter) {
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
   EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
-  EXPECT_CALL(listener_factory_, createListenSocket_(_, true));
-  manager_.addListener(*loader);
-  EXPECT_EQ(1U, manager_.listeners().size());
+  EXPECT_CALL(listener_factory_, createListenSocket(_, true));
+  manager_->addOrUpdateListener(*loader);
+  EXPECT_EQ(1U, manager_->listeners().size());
 }
 
-TEST_F(ListenerManagerImplTest, DefaultListenerPerConnectionBufferLimit) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, DefaultListenerPerConnectionBufferLimit) {
   std::string json = R"EOF(
   {
     "address": "tcp://127.0.0.1:1234",
@@ -61,12 +73,12 @@ TEST_F(ListenerManagerImplTest, DefaultListenerPerConnectionBufferLimit) {
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
   EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
-  EXPECT_CALL(listener_factory_, createListenSocket_(_, true));
-  manager_.addListener(*loader);
-  EXPECT_EQ(1024 * 1024U, manager_.listeners().back().get().perConnectionBufferLimitBytes());
+  EXPECT_CALL(listener_factory_, createListenSocket(_, true));
+  manager_->addOrUpdateListener(*loader);
+  EXPECT_EQ(1024 * 1024U, manager_->listeners().back().get().perConnectionBufferLimitBytes());
 }
 
-TEST_F(ListenerManagerImplTest, SetListenerPerConnectionBufferLimit) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, SetListenerPerConnectionBufferLimit) {
   std::string json = R"EOF(
   {
     "address": "tcp://127.0.0.1:1234",
@@ -77,12 +89,12 @@ TEST_F(ListenerManagerImplTest, SetListenerPerConnectionBufferLimit) {
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
   EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
-  EXPECT_CALL(listener_factory_, createListenSocket_(_, true));
-  manager_.addListener(*loader);
-  EXPECT_EQ(8192U, manager_.listeners().back().get().perConnectionBufferLimitBytes());
+  EXPECT_CALL(listener_factory_, createListenSocket(_, true));
+  manager_->addOrUpdateListener(*loader);
+  EXPECT_EQ(8192U, manager_->listeners().back().get().perConnectionBufferLimitBytes());
 }
 
-TEST_F(ListenerManagerImplTest, SslContext) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, SslContext) {
   std::string json = R"EOF(
   {
     "address": "tcp://127.0.0.1:1234",
@@ -100,12 +112,12 @@ TEST_F(ListenerManagerImplTest, SslContext) {
 
   Json::ObjectSharedPtr loader = TestEnvironment::jsonLoadFromString(json);
   EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
-  EXPECT_CALL(listener_factory_, createListenSocket_(_, true));
-  manager_.addListener(*loader);
-  EXPECT_NE(nullptr, manager_.listeners().back().get().sslContext());
+  EXPECT_CALL(listener_factory_, createListenSocket(_, true));
+  manager_->addOrUpdateListener(*loader);
+  EXPECT_NE(nullptr, manager_->listeners().back().get().sslContext());
 }
 
-TEST_F(ListenerManagerImplTest, BadListenerConfig) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, BadListenerConfig) {
   std::string json = R"EOF(
   {
     "address": "tcp://127.0.0.1:1234",
@@ -115,10 +127,10 @@ TEST_F(ListenerManagerImplTest, BadListenerConfig) {
   )EOF";
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
-  EXPECT_THROW(manager_.addListener(*loader), Json::Exception);
+  EXPECT_THROW(manager_->addOrUpdateListener(*loader), Json::Exception);
 }
 
-TEST_F(ListenerManagerImplTest, BadFilterConfig) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, BadFilterConfig) {
   std::string json = R"EOF(
   {
     "address": "tcp://127.0.0.1:1234",
@@ -133,10 +145,10 @@ TEST_F(ListenerManagerImplTest, BadFilterConfig) {
   )EOF";
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
-  EXPECT_THROW(manager_.addListener(*loader), Json::Exception);
+  EXPECT_THROW(manager_->addOrUpdateListener(*loader), Json::Exception);
 }
 
-TEST_F(ListenerManagerImplTest, BadFilterName) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, BadFilterName) {
   std::string json = R"EOF(
   {
     "address": "tcp://127.0.0.1:1234",
@@ -151,11 +163,11 @@ TEST_F(ListenerManagerImplTest, BadFilterName) {
   )EOF";
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
-  EXPECT_THROW_WITH_MESSAGE(manager_.addListener(*loader), EnvoyException,
+  EXPECT_THROW_WITH_MESSAGE(manager_->addOrUpdateListener(*loader), EnvoyException,
                             "unable to create filter factory for 'invalid'/'write'");
 }
 
-TEST_F(ListenerManagerImplTest, BadFilterType) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, BadFilterType) {
   std::string json = R"EOF(
   {
     "address": "tcp://127.0.0.1:1234",
@@ -170,7 +182,7 @@ TEST_F(ListenerManagerImplTest, BadFilterType) {
   )EOF";
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
-  EXPECT_THROW_WITH_MESSAGE(manager_.addListener(*loader), EnvoyException,
+  EXPECT_THROW_WITH_MESSAGE(manager_->addOrUpdateListener(*loader), EnvoyException,
                             "unable to create filter factory for 'echo'/'write'");
 }
 
@@ -188,7 +200,7 @@ public:
   }
 };
 
-TEST_F(ListenerManagerImplTest, StatsScopeTest) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, StatsScopeTest) {
   Registry::RegisterFactory<TestStatsConfigFactory, Configuration::NamedNetworkFilterConfigFactory>
       registered;
 
@@ -208,9 +220,9 @@ TEST_F(ListenerManagerImplTest, StatsScopeTest) {
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
   EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
-  EXPECT_CALL(listener_factory_, createListenSocket_(_, false));
-  manager_.addListener(*loader);
-  manager_.listeners().front().get().listenerScope().counter("foo").inc();
+  EXPECT_CALL(listener_factory_, createListenSocket(_, false));
+  manager_->addOrUpdateListener(*loader);
+  manager_->listeners().front().get().listenerScope().counter("foo").inc();
 
   EXPECT_EQ(1UL, server_.stats_store_.counter("bar").value());
   EXPECT_EQ(1UL, server_.stats_store_.counter("listener.127.0.0.1_1234.foo").value());
@@ -233,7 +245,7 @@ public:
   }
 };
 
-TEST_F(ListenerManagerImplTest, DeprecatedFilterConfigFactoryRegistrationTest) {
+TEST_F(ListenerManagerImplWithRealFiltersTest, DeprecatedFilterConfigFactoryRegistrationTest) {
   // Test ensures that the deprecated network filter registration still works without error.
 
   // Register the config factory
@@ -254,8 +266,56 @@ TEST_F(ListenerManagerImplTest, DeprecatedFilterConfigFactoryRegistrationTest) {
 
   Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
   EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
-  EXPECT_CALL(listener_factory_, createListenSocket_(_, true));
-  manager_.addListener(*loader);
+  EXPECT_CALL(listener_factory_, createListenSocket(_, true));
+  manager_->addOrUpdateListener(*loader);
+}
+
+TEST_F(ListenerManagerImplTest, DynamicFlow) {
+  InSequence s;
+
+  std::string listener1 = R"EOF(
+  {
+    "name": "foo",
+    "address": "tcp://127.0.0.1:1234",
+    "filters": []
+  }
+  )EOF";
+
+  Json::ObjectSharedPtr loader = Json::Factory::loadFromString(listener1);
+  EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
+  EXPECT_CALL(listener_factory_, createListenSocket(_, true));
+  // Add first listener.
+  EXPECT_TRUE(manager_->addOrUpdateListener(*loader));
+  // Update duplicate should be a NOP.
+  EXPECT_FALSE(manager_->addOrUpdateListener(*loader));
+
+  std::string listener1_update1 = R"EOF(
+  {
+    "name": "foo",
+    "address": "tcp://127.0.0.1:1234",
+    "filters": [
+      { "type" : "read", "name" : "fake", "config" : {} }
+    ]
+  }
+  )EOF";
+
+  loader = Json::Factory::loadFromString(listener1_update1);
+  EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
+  // Update first listener. Should share socket.
+  EXPECT_TRUE(manager_->addOrUpdateListener(*loader));
+
+  // Start workers.
+  EXPECT_CALL(*worker_, addListener(_));
+  EXPECT_CALL(*worker_, start(_));
+  manager_->startWorkers(guard_dog_);
+
+  // Update duplicate should be a NOP.
+  EXPECT_FALSE(manager_->addOrUpdateListener(*loader));
+
+  // Update. Should go into warming.
+  loader = Json::Factory::loadFromString(listener1);
+  EXPECT_CALL(listener_factory_, createFilterFactoryList(_, _));
+  EXPECT_TRUE(manager_->addOrUpdateListener(*loader));
 }
 
 } // Server

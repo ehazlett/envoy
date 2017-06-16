@@ -27,6 +27,9 @@ MockAdmin::~MockAdmin() {}
 MockDrainManager::MockDrainManager() {}
 MockDrainManager::~MockDrainManager() {}
 
+MockGuardDog::MockGuardDog() {}
+MockGuardDog::~MockGuardDog() {}
+
 MockHotRestart::MockHotRestart() {}
 MockHotRestart::~MockHotRestart() {}
 
@@ -38,6 +41,9 @@ MockListenerManager::~MockListenerManager() {}
 
 MockWorkerFactory::MockWorkerFactory() {}
 MockWorkerFactory::~MockWorkerFactory() {}
+
+MockWorker::MockWorker() {}
+MockWorker::~MockWorker() {}
 
 MockInstance::MockInstance() : ssl_context_manager_(runtime_loader_) {
   ON_CALL(*this, threadLocal()).WillByDefault(ReturnRef(thread_local_));
